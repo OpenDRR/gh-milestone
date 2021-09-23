@@ -94,7 +94,7 @@ for prefix in "${prefixes[@]}"; do
 done
 
 echo
-echo "Open Issues in \"${old_milestone_title}\ (previous milestone):"
+echo "Open Issues in \"${old_milestone_title}\" (previous milestone):"
 echo
 issuesJSON="$(gh api -X GET --cache 2m "repos/${owner}/${repo}/issues" \
 	-f milestone="${old_milestone_number}" \
