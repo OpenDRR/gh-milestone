@@ -3,7 +3,13 @@ set -e
 
 help() {
   cat <<EOF
-Usage: gh milestone
+Usage:
+    $(basename "$0") create OLD_MILESTONE NEW_MILESTONE
+    $(basename "$0") change_date MILESTONE NEW_DUE_DATE
+
+Examples:
+    gh milestone create "Sprint 55" "Sprint 56"
+    gh milestone change_date "Sprint 55" 2022-04-14
 EOF
 }
 
@@ -25,97 +31,157 @@ EOF
 #  shift
 #done
 
-echo "Welcome to gh milestone!"
-echo
-echo "INFO: bash version ${BASH_VERSION} (${BASH_VERSINFO[5]})"
-echo
+create_milestone() {
+  # TODO: Multiple
+  #owner=OpenDRR
+  #repo=opendrr-api
+  owner=${owner:-'{owner}'}
+  repo=${repo:-'{repo}'}
 
-if [[ $# != 2 ]]; then
-  echo "Usage: $(basename "$0") OLD_MILESTONE NEW_MILESTONE"
-  exit 1
-fi
-old_milestone_title="$1"
-new_milestone_title="$2"
+  # Get ${old_milestone_number} and ${new_milestone_number}
+  prefixes=(old new)
+  for prefix in "${prefixes[@]}"; do
+    title_var=${prefix}_milestone_title
+    number_var=${prefix}_milestone_number
+    echo -n "Checking ${prefix} milestone \"${!title_var}\"... "
+    declare "${number_var}"="$(gh api --cache 1m -X GET "repos/${owner}/${repo}/milestones" \
+      --jq ".[] | select(.title == \"${!title_var}\").number")"
+    if [[ -z ${!number_var} ]]; then
+      if [[ ${prefix} == "new" ]]; then
+        echo "does not exist"
+        read -r -p "Create the new milestone \"${new_milestone_title}\" now? [y/N] " response
+        case "$response" in
+        [yY][eE][sS] | [yY]) ;;
 
-# TODO: Multiple
-#owner=OpenDRR
-#repo=opendrr-api
-owner=${owner:-'{owner}'}
-repo=${repo:-'{repo}'}
-
-# Get ${old_milestone_number} and ${new_milestone_number}
-prefixes=(old new)
-for prefix in "${prefixes[@]}"; do
-  title_var=${prefix}_milestone_title
-  number_var=${prefix}_milestone_number
-  echo -n "Checking ${prefix} milestone \"${!title_var}\"... "
-  declare "${number_var}"="$(gh api --cache 1m -X GET "repos/${owner}/${repo}/milestones" \
-                          --jq ".[] | select(.title == \"${!title_var}\").number")"
-  if [[ -z ${!number_var} ]]; then
-    if [[ ${prefix} == "new" ]]; then
-      echo "does not exist"
-      read -r -p "Create the new milestone \"${new_milestone_title}\" now? [y/N] " response
-      case "$response" in
-        [yY][eE][sS]|[yY]) 
-          ;;
         *)
-	  echo "Exiting..."
-	  exit 1
+          echo "Exiting..."
+          exit 1
           ;;
-      esac
-      default_due_date=$(date --date='TZ="America/Vancouver" 14:30 2 Thursday' --iso-8601)
-      read -r -p "Due date for \"${new_milestone_title}\"? [${default_due_date}] " due_date
-      case "$due_date" in
+        esac
+        default_due_date=$(date --date='TZ="America/Vancouver" 14:30 2 Thursday' --iso-8601)
+        read -r -p "Due date for \"${new_milestone_title}\"? [${default_due_date}] " due_date
+        case "$due_date" in
         2[0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9])
-	  # Valid date
+          # Valid date
           ;;
         "")
-	  due_date="$default_due_date"
-	;;
+          due_date="$default_due_date"
+          ;;
         *)
-	  echo "Invalid date, exiting..."
-	  exit 1
-	  ;;
-      esac
-      echo "Great! Creating Milestone \"${new_milestone_title}\" due on ${due_date}..." 
-      new_milestone_number="$(gh api -X POST "repos/${owner}/${repo}/milestones" \
-	      -f title="${new_milestone_title}" \
-	      -f due_on="${due_date}T14:30:00-07:00" \
-	      --jq ".number")"
-      echo "New milestone \"${new_milestone_title}\" created (#${new_milestone_number})"
-    else  # old milestone
-      echo
-      echo "Error: \"${old_milestone_title}\" does not exist, aborting."
-      exit 1
+          echo "Invalid date, exiting..."
+          exit 1
+          ;;
+        esac
+        echo "Great! Creating Milestone \"${new_milestone_title}\" due on ${due_date}..."
+        new_milestone_number="$(gh api -X POST "repos/${owner}/${repo}/milestones" \
+          -f title="${new_milestone_title}" \
+          -f due_on="${due_date}T14:30:00-07:00" \
+          --jq ".number")"
+        echo "New milestone \"${new_milestone_title}\" created (#${new_milestone_number})"
+      else # old milestone
+        echo
+        echo "Error: \"${old_milestone_title}\" does not exist, aborting."
+        exit 1
+      fi
+    else
+      echo "exists (#${!number_var})"
     fi
-  else
-    echo "exists (#${!number_var})"
-  fi
-done
+  done
+}
 
-echo
-echo "Open Issues in \"${old_milestone_title}\" (previous milestone):"
-echo
-issuesJSON="$(gh api -X GET --cache 2m "repos/${owner}/${repo}/issues" \
-	-f milestone="${old_milestone_number}" \
-	-f direction=asc)"
-while IFS= read -r line; do
-  echo $line
-done < <(jq -r '.[] | "#\(.number): \(.assignee.login) \(.title)"' < <(echo "${issuesJSON}"))
-
-echo ""
-echo "Getting ready to move issues..."
-
-while IFS= read -r -u 3 i; do
-  title=$(echo "${issuesJSON}" | jq -r ".[] | select(.number == ${i}).title")
+move_issues() {
   echo
-  read -r -p "Move \"Issue #${i}: ${title}\" to ${new_milestone_title}? [y/N] " response
-  case "$response" in
-    [yY][eE][sS]|[yY]) 
+  echo "Open Issues in \"${old_milestone_title}\" (previous milestone):"
+  echo
+  issuesJSON="$(gh api -X GET --cache 2m "repos/${owner}/${repo}/issues" \
+    -f milestone="${old_milestone_number}" \
+    -f direction=asc)"
+  while IFS= read -r line; do
+    echo "$line"
+  done < <(jq -r '.[] | "#\(.number): \(.assignee.login) \(.title)"' < <(echo "${issuesJSON}"))
+
+  echo ""
+  echo "Getting ready to move issues..."
+
+  while IFS= read -r -u 3 i; do
+    title=$(echo "${issuesJSON}" | jq -r ".[] | select(.number == ${i}).title")
+    echo
+    read -r -p "Move \"Issue #${i}: ${title}\" to ${new_milestone_title}? [y/N] " response
+    case "$response" in
+    [yY][eE][sS] | [yY])
       gh api -X PATCH "repos/${owner}/${repo}/issues/$i" -f milestone="${new_milestone_number}" --silent
       ;;
     *)
       # do_something_else
       ;;
+    esac
+  done 3< <(jq -r '.[].number' < <(echo "${issuesJSON}"))
+}
+
+change_date() {
+  owner=${owner:-'{owner}'}
+  repo=${repo:-'{repo}'}
+
+  milestone_number="$(gh api --cache 1m -X GET "repos/${owner}/${repo}/milestones" \
+    --jq ".[] | select(.title == \"${milestone_title}\").number")"
+
+  if [[ -z $milestone_number ]]; then
+    echo "Error: Milestone ${milestone_title} not found for ${owner}/${repo}."
+    exit 1
+  fi
+
+  milestone_due_date_orig="$(gh api --cache 1m -X GET "repos/${owner}/${repo}/milestones" \
+    --jq ".[] | select(.title == \"${milestone_title}\").due_on")"
+  # echo "${milestone_number}, ${milestone_due_date_orig}"
+
+  case "${milestone_due_date}" in
+  2[0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9])
+    # Valid date
+    ;;
+  *)
+    echo "Invalid date, exiting..."
+    exit 1
+    ;;
   esac
-done 3< <(jq -r '.[].number' < <(echo "${issuesJSON}"))
+
+  due_date_old="${milestone_due_date_orig:0:10}"
+  due_date_new="${milestone_due_date}"
+
+  if [[ $due_date_old == "$due_date_new" ]]; then
+    echo "Milestone \"${milestone_title}\" is already set to due on ${due_date_new}, skipping."
+    exit
+  fi
+
+  echo "Updating ${owner}/${repo} Milestone \"${milestone_title}\" due date from ${due_date_old} to ${due_date_new}..."
+  gh api -X PATCH "repos/${owner}/${repo}/milestones/${milestone_number}" \
+    -f due_on="${due_date_new}T14:30:00-07:00"
+}
+
+main() {
+  echo "Welcome to gh milestone!"
+  echo
+  echo "INFO: bash version ${BASH_VERSION} (${BASH_VERSINFO[5]})"
+  echo
+
+  if [[ $# != 3 ]]; then
+    help
+    exit 1
+  fi
+
+  cmd="$1"
+
+  case $cmd in
+  create)
+    old_milestone_title="$2"
+    new_milestone_title="$3"
+    create_milestone
+    ;;
+  change_date)
+    milestone_title="$2"
+    milestone_due_date="$3"
+    change_date
+    ;;
+  esac
+}
+
+main "$@"
